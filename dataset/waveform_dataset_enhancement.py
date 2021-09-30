@@ -2,6 +2,8 @@ import os
 from torch.utils.data import Dataset
 import librosa
 
+from audio_zen.acoustics.feature import load_wav_torch_to_np
+
 
 class WaveformDataset(Dataset):
     def __init__(self, dataset, limit=None, offset=0, sample_length=None, sr = 16000, sample_for_wave_u_net = True):
@@ -45,7 +47,7 @@ class WaveformDataset(Dataset):
         mixture_path = self.dataset_list[item]
         name = os.path.splitext(os.path.basename(mixture_path))[0]
 
-        mixture, _ = librosa.load(os.path.abspath(os.path.expanduser(mixture_path)), sr=self.sr)
+        mixture, _ = load_wav_torch_to_np(os.path.abspath(os.path.expanduser(mixture_path)), sr=self.sr)
 
         if self.sample_for_wave_u_net:
             return mixture.reshape(1, -1), name

@@ -2,6 +2,7 @@ import time
 from functools import partial
 from pathlib import Path
 
+import sys 
 import librosa
 import numpy as np
 import soundfile as sf
@@ -90,6 +91,13 @@ class BaseInferencer:
     def _load_model(model_config, checkpoint_path, device):
         model = initialize_module(model_config["path"], args=model_config["args"], initialize=True)
         model_checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        if str(checkpoint_path).endswith(".pth"):
+            intermediary = dict()
+            intermediary.setdefault("model", model_checkpoint)
+            intermediary.setdefault("epoch", "custom")
+            model_checkpoint = intermediary
+
         model_static_dict = model_checkpoint["model"]
         epoch = model_checkpoint["epoch"]
         print(f"当前正在处理 tar 格式的模型断点，其 epoch 为：{epoch}.")
@@ -119,6 +127,54 @@ class BaseInferencer:
 
         return enhanced
 
+    @staticmethod
+    def unfold_overlap_chunks(audio, chunk_window_size, overlap_size):
+        """
+        Function to build overlapping chunks of audio (torch tensor of shape (1, n))
+        """
+        audio = audio.clone().detach()
+        
+        assert 2*overlap_size < chunk_window_size
+        chunk_list = []
+        current_offset = 0
+        need_more_chunks = True
+        
+        while need_more_chunks:
+            chunk_list.append(audio[..., current_offset:current_offset+chunk_window_size].clone().detach())
+            
+            current_rightest = current_offset+chunk_window_size
+            
+            if current_rightest > audio.shape[-1]:
+                need_more_chunks = False 
+            else:
+                current_offset = current_offset+chunk_window_size-overlap_size
+            
+        return chunk_list
+
+    @staticmethod
+    def add_overlap_chunks(chunk_list, chunk_window_size, overlap_size):
+        """
+        Function to reassemble overlapping chunks of audio (numpy!) (see unfold_overlap_chunks)
+        """
+        original_size = sum ([x.shape[-1] for x in chunk_list]) - (len (chunk_list) - 1) * overlap_size
+        reconstruction = np.zeros(original_size)
+        
+        for i in range (len (chunk_list)):
+            current_tensor = chunk_list[i]
+            
+            if i != 0:
+                ramp_left = np.linspace(0.0, 1.0, overlap_size)
+                current_tensor[:overlap_size] = current_tensor[:overlap_size] * ramp_left
+                
+            if i != len (chunk_list) -1:
+                ramp_right = np.linspace(1.0, 0.0, overlap_size)
+                current_tensor[-overlap_size:] = current_tensor[-overlap_size:] * ramp_right
+            
+            offset = i * (chunk_window_size - overlap_size)
+            reconstruction [offset : offset + chunk_window_size] += current_tensor[:chunk_window_size]
+            
+        return reconstruction.copy()
+
     @torch.no_grad()
     def __call__(self):
         inference_type = self.inference_config["type"]
@@ -130,7 +186,28 @@ class BaseInferencer:
             assert len(name) == 1, "The batch size of inference stage must 1."
             name = name[0]
 
-            enhanced = getattr(self, inference_type)(noisy.to(self.device), inference_args)
+            torch.cuda.empty_cache()
+            
+            # caution magic numbers ahead!
+            warmup_time = np.min ([5 * self.sr, noisy.shape[-1]])
+            chunk_window_size = 60 * self.sr 
+            overlap_size = 5 * self.sr
+
+            # giving network some time ahead to adapt
+            noisy = torch.cat([noisy[..., -warmup_time:], noisy], 1)
+
+            # unfold in case file is too long
+            overlap_chunks = self.unfold_overlap_chunks(noisy, chunk_window_size, overlap_size)
+
+            
+            for i in range( len (overlap_chunks)):
+                enhanced = getattr(self, inference_type)(overlap_chunks[i].to(self.device), inference_args)
+                overlap_chunks[i] = enhanced
+            
+            # re-assemble overlapping chunks
+            enhanced = self.add_overlap_chunks (overlap_chunks, chunk_window_size, overlap_size)
+            # remove warmup time
+            enhanced = enhanced[warmup_time:]
 
             if abs(enhanced).any() > 1:
                 print(f"Warning: enhanced is not in the range [-1, 1], {name}")
@@ -140,4 +217,5 @@ class BaseInferencer:
 
             # clnsp102_traffic_248091_3_snr0_tl-21_fileid_268 => clean_fileid_0
             # name = "clean_" + "_".join(name.split("_")[-2:])
+            print("writing to ", self.enhanced_dir / f"{name}.wav")
             sf.write(self.enhanced_dir / f"{name}.wav", enhanced, samplerate=self.acoustic_config["sr"])
