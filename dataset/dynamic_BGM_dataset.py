@@ -129,8 +129,6 @@ class Dataset(BaseDataset):
         
         self.mix_buffer=[]
 
-        # todo remove this buffer again... it's just for visualisation
-        self.debug_buffer=[]
 
         self.dry_run=dry_run
         self.target_task=target_task
@@ -726,8 +724,6 @@ class Dataset(BaseDataset):
 
         print ("sounds are of voice types:", voice_groups)
 
-        self.debug_buffer.append ((voice_audios, voice_groups))
-
         if self.dry_run:
             self.mix_buffer=[1]
             return 
@@ -801,7 +797,6 @@ class Dataset(BaseDataset):
 
     def __getitem__(self, item):
         sig_lead, mixture, accomp_mix, accomp_mix_orig, piece_id, snr = self.pop_from_buffer ()
-        return self.debug_buffer
         if self.target_task == "standard":
             return sig_lead, mixture, accomp_mix, accomp_mix_orig, piece_id, snr
         if self.target_task == "baseline_fsn":
