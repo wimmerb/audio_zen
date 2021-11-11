@@ -188,13 +188,16 @@ class BaseInferencer:
 
             torch.cuda.empty_cache()
             
+            print (f"processing sample of length {noisy.shape[-1]/self.sr}")
+            length_old = noisy.shape[-1]
+            
             # caution magic numbers ahead!
             warmup_time = np.min ([5 * self.sr, noisy.shape[-1]])
-            chunk_window_size = 60 * self.sr 
+            chunk_window_size = 20 * self.sr 
             overlap_size = 5 * self.sr
 
             # giving network some time ahead to adapt
-            noisy = torch.cat([noisy[..., -warmup_time:], noisy], 1)
+            noisy = torch.cat([torch.flip(noisy[..., :warmup_time], [-1]), noisy], 1)
 
             # unfold in case file is too long
             overlap_chunks = self.unfold_overlap_chunks(noisy, chunk_window_size, overlap_size)
@@ -208,6 +211,8 @@ class BaseInferencer:
             enhanced = self.add_overlap_chunks (overlap_chunks, chunk_window_size, overlap_size)
             # remove warmup time
             enhanced = enhanced[warmup_time:]
+            
+            assert length_old == enhanced.shape[0]
 
             if abs(enhanced).any() > 1:
                 print(f"Warning: enhanced is not in the range [-1, 1], {name}")
